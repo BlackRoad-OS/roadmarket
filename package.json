@@ -1,0 +1,16 @@
+{
+  "name": "roadmarket",
+  "version": "1.0.0",
+  "description": "Digital Product Marketplace & Creator Economy Platform",
+  "private": true,
+  "scripts": {
+    "start": "npx serve .",
+    "validate": "node scripts/validate.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BlackRoad-OS/roadmarket.git"
+  },
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "BlackRoad OS, Inc."
+}
