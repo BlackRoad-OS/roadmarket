@@ -1,0 +1,99 @@
+name: Auto PR Management
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: auto-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  auto-label:
+    name: Auto-label PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    if: github.event_name == 'pull_request_target' && github.event.action == 'opened'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          sparse-checkout: .
+
+      - name: Label by file type
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100
+            });
+
+            const labels = new Set();
+            for (const file of files) {
+              if (file.filename.endsWith('.html')) labels.add('html');
+              if (file.filename.endsWith('.js')) labels.add('javascript');
+              if (file.filename.endsWith('.css')) labels.add('css');
+              if (file.filename.includes('.github/workflows')) labels.add('ci/cd');
+              if (file.filename.includes('clerk')) labels.add('auth');
+              if (file.filename.endsWith('.md')) labels.add('docs');
+            }
+
+            if (context.payload.pull_request.user.login === 'dependabot[bot]') {
+              labels.add('dependencies');
+            }
+
+            if (labels.size > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: [...labels]
+              });
+            }
+
+  auto-merge-dependabot:
+    name: Auto-merge Dependabot
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >
+      github.event_name == 'pull_request_target' &&
+      github.actor == 'dependabot[bot]'
+    steps:
+      - name: Approve and merge
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Approve the PR
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              event: 'APPROVE',
+              body: 'Auto-approved dependabot update.'
+            });
+
+            // Wait for checks
+            await new Promise(resolve => setTimeout(resolve, 10000));
+
+            // Merge
+            try {
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                merge_method: 'squash'
+              });
+              console.log('PR merged successfully');
+            } catch (e) {
+              console.log('Merge failed (checks may still be running):', e.message);
+            }

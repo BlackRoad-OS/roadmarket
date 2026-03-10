@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate HTML & Assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check HTML syntax
+        run: |
+          errors=0
+          for f in $(find . -name '*.html' -not -path './.git/*'); do
+            echo "Checking $f..."
+            # Check for unclosed tags and basic structure
+            if ! grep -q '<!DOCTYPE html>' "$f"; then
+              echo "::warning file=$f::Missing DOCTYPE declaration"
+            fi
+            if ! grep -q '</html>' "$f"; then
+              echo "::error file=$f::Missing closing </html> tag"
+              errors=$((errors + 1))
+            fi
+          done
+          if [ $errors -gt 0 ]; then
+            echo "Found $errors error(s)"
+            exit 1
+          fi
+          echo "All HTML files valid"
+
+      - name: Check for broken internal links
+        run: |
+          errors=0
+          for f in $(find . -name '*.html' -not -path './.git/*'); do
+            # Extract href values pointing to local files
+            grep -oP 'href="(?!http|#|mailto|tel)([^"]+)"' "$f" | \
+              sed 's/href="//;s/"//' | while read -r link; do
+                target="$(dirname "$f")/$link"
+                if [ ! -f "$target" ] && [ ! -f "$link" ]; then
+                  echo "::warning file=$f::Potentially broken link: $link"
+                fi
+              done
+          done
+
+      - name: Check for placeholder/unconfigured values
+        run: |
+          warnings=0
+          if grep -r 'YOUR_PUBLISHABLE_KEY\|YOUR_FRONTEND_API\|YOUR_.*_KEY' --include='*.html' --include='*.js' .; then
+            echo "::warning::Found placeholder API keys that need configuration"
+            warnings=$((warnings + 1))
+          fi
+          echo "Found $warnings warning(s) - placeholders should be replaced before production deployment"

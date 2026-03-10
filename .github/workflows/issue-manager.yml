@@ -1,0 +1,152 @@
+name: Issue Manager
+
+on:
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+concurrency:
+  group: issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    name: Auto-triage new issues
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+    steps:
+      - name: Label and respond
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const title = issue.title.toLowerCase();
+            const body = (issue.body || '').toLowerCase();
+            const labels = [];
+
+            // Auto-label based on content
+            if (title.includes('bug') || body.includes('bug')) labels.push('bug');
+            if (title.includes('feature') || body.includes('feature request')) labels.push('enhancement');
+            if (title.includes('docs') || title.includes('documentation')) labels.push('documentation');
+            if (title.includes('deploy') || body.includes('deploy')) labels.push('deployment');
+            if (title.includes('auth') || body.includes('clerk') || body.includes('login')) labels.push('auth');
+
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels
+              });
+            }
+
+  spam-filter:
+    name: Anti-spam filter
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+    steps:
+      - name: Check for spam
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const body = issue.body || '';
+            const title = issue.title || '';
+
+            // Spam indicators
+            const spamPatterns = [
+              /\b(buy|cheap|discount|casino|forex|crypto.*invest)\b/gi,
+              /(http[s]?:\/\/){3,}/g,  // Many URLs
+              /(.)\1{20,}/g,           // Repeated characters
+            ];
+
+            let spamScore = 0;
+            for (const pattern of spamPatterns) {
+              if (pattern.test(title + ' ' + body)) spamScore++;
+            }
+
+            // Empty issues with no body
+            if (!body.trim() && title.length < 10) spamScore++;
+
+            // Brand new accounts with no repos (check account age)
+            const user = issue.user;
+            const accountAge = Date.now() - new Date(user.created_at).getTime();
+            const daysSinceCreation = accountAge / (1000 * 60 * 60 * 24);
+            if (daysSinceCreation < 1) spamScore++;
+
+            if (spamScore >= 2) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: ['spam']
+              });
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: 'This issue has been flagged for review. A maintainer will look at it shortly.'
+              });
+
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+                state_reason: 'not_planned'
+              });
+            }
+
+  rate-limit-check:
+    name: Rate limit protection
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+    steps:
+      - name: Check issue creation rate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const user = context.payload.issue.user.login;
+            const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+            // Check how many issues this user created recently
+            const { data: recentIssues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              creator: user,
+              since: oneHourAgo,
+              state: 'all',
+              per_page: 20
+            });
+
+            if (recentIssues.length > 5) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                body: `@${user} You've created multiple issues recently. Please consolidate related feedback into fewer issues. This issue has been closed to prevent spam. If this is a legitimate issue, please reopen it.`
+              });
+
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                labels: ['rate-limited']
+              });
+
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                state: 'closed',
+                state_reason: 'not_planned'
+              });
+            }
